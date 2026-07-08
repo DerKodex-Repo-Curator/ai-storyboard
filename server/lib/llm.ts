@@ -33,7 +33,7 @@ interface ToolCallRequest {
   };
 }
 
-interface LLMConfig {
+export interface LLMConfig {
   apiBaseUrl: string;
   apiKey: string;
   model: string;
@@ -82,6 +82,38 @@ export async function getAuthoringLLMConfig(): Promise<{
     model: map.authoringModel || map.model || "llama3.2",
     apiBaseUrl: map.authoringApiBaseUrl || undefined,
     apiKey: map.authoringApiKey || undefined,
+  };
+}
+
+/** Whether the orchestrator may delegate frames to scoped sub-agents. Off by
+ *  default, in which case the agent behaves exactly as before. */
+export async function getSubAgentsEnabled(): Promise<boolean> {
+  const rows = await db.select().from(schema.settings);
+  const map: Record<string, string> = {};
+  for (const row of rows) map[row.key] = row.value;
+  return map.subAgentsEnabled === "true";
+}
+
+/**
+ * The LLM config a delegated sub-agent streams against. Mirrors
+ * `getAuthoringLLMConfig`: setting only `subAgentModel` swaps the model on the
+ * same provider; also setting URL/key points sub-agents at a different provider
+ * entirely (e.g. a cheaper/faster model for the per-frame grind while the
+ * orchestrator stays on a stronger planner). Every field falls through to the
+ * main `getLLMConfig()` value, so leaving them blank makes sub-agents use the
+ * main integration.
+ */
+export async function getSubAgentLLMConfig(): Promise<LLMConfig> {
+  const rows = await db.select().from(schema.settings);
+  const map: Record<string, string> = {};
+  for (const row of rows) map[row.key] = row.value;
+  return {
+    apiBaseUrl: map.subAgentApiBaseUrl || map.apiBaseUrl || "http://localhost:11434/v1",
+    apiKey: map.subAgentApiKey || map.apiKey || "ollama",
+    model: map.subAgentModel || map.model || "llama3.2",
+    temperature: parseFloat(map.temperature || "0.7"),
+    maxOutputTokens: parseInt(map.maxOutputTokens || "16384"),
+    provider: map.provider || "auto",
   };
 }
 
@@ -391,11 +423,37 @@ export function getToolDefinitions() {
   ];
 }
 
+/**
+ * The `delegate_image` tool, offered to the project orchestrator ONLY when
+ * sub-agents are enabled (kept out of `getToolDefinitions` so it never appears
+ * otherwise). Handing a frame to a sub-agent gives that frame its own context
+ * window, so the orchestrator doesn't starve per-frame detail on large jobs.
+ */
+export function getDelegateToolDefinition() {
+  return {
+    type: "function" as const,
+    function: {
+      name: "delegate_image",
+      description:
+        "Hand ONE storyboard frame to a focused sub-agent that composes its detailed layout, renders it, views the result, and self-corrects, then reports back a summary. Use this on large jobs so each frame gets its own dedicated attention instead of being rushed. Provide `brief` with EVERY detail the sub-agent needs for consistency (subjects, poses, setting, style, palette, text, and continuity with neighboring frames) — the sub-agent only sees this frame plus your brief. Call again on the same frame to review its summary and guide it further. Blocks until the sub-agent finishes.",
+      parameters: {
+        type: "object",
+        properties: {
+          image_id: { type: "string", description: "The storyboard frame (image) id to delegate." },
+          brief: { type: "string", description: "Self-contained instructions + all details the sub-agent needs to build this frame consistently." },
+        },
+        required: ["image_id", "brief"],
+      },
+    },
+  };
+}
+
 export async function streamChat(
   messages: ChatMessage[],
-  tools?: ReturnType<typeof getToolDefinitions>
+  tools?: ReturnType<typeof getToolDefinitions>,
+  configOverride?: LLMConfig,
 ): Promise<Response> {
-  const config = await getLLMConfig();
+  const config = configOverride ?? (await getLLMConfig());
 
   if (detectProvider(config.apiBaseUrl, config.provider) === "anthropic") {
     return anthropicStream({

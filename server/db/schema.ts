@@ -99,6 +99,38 @@ export const imageChatMessages = sqliteTable("image_chat_messages", {
   createdAt: text("created_at").notNull(),
 }, (t) => [index("ix_image_chat_messages_image").on(t.imageId)]);
 
+/**
+ * Generalizable lessons a delegated sub-agent learned while refining a frame
+ * (e.g. an Ideogram/composition/style pitfall specific to this project). They
+ * are injected into later sub-agents' prompts so each frame benefits from the
+ * fixes made on earlier ones. imageId is the frame that produced the note (no
+ * hard FK — the frame may be deleted, but the lesson stays useful).
+ */
+export const subAgentLearnings = sqliteTable("sub_agent_learnings", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  imageId: text("image_id"),
+  note: text("note").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (t) => [index("ix_sub_agent_learnings_project").on(t.projectId)]);
+
+/**
+ * A project's "bible" of recurring elements — characters, costumes, props,
+ * locations that appear across multiple frames. Each holds a canonical, detailed
+ * appearance description that is injected into every sub-agent so a character
+ * introduced in one frame renders the SAME way in later frames instead of being
+ * re-invented. Upserted by (projectId, lowercased name).
+ */
+export const recurringElements = sqliteTable("recurring_elements", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),                    // canonical identifier, e.g. "Detective Mara"
+  kind: text("kind").notNull().default("character"), // character | costume | prop | location | other
+  description: text("description").notNull(),       // detailed, reusable appearance
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (t) => [index("ix_recurring_elements_project").on(t.projectId)]);
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),

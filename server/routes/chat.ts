@@ -1,5 +1,13 @@
 import { Hono } from "hono";
-import { getToolDefinitions, getContextWindowSize, summarizeConversation } from "../lib/llm";
+import { getToolDefinitions, getContextWindowSize, summarizeConversation, getSubAgentsEnabled, getDelegateToolDefinition } from "../lib/llm";
+import { executeToolCall as realExecuteToolCall } from "../lib/toolExecutor";
+import { runSubAgent } from "../lib/subAgent";
+import {
+  loadElements,
+  getRecurringElementToolDefinitions,
+  executeElementTool,
+  ELEMENT_TOOL_NAMES,
+} from "../lib/recurringElements";
 import { db, schema } from "../db/client";
 import { eq, and, asc, notInArray } from "drizzle-orm";
 import { newId } from "../lib/nanoid";
@@ -60,6 +68,7 @@ async function buildProjectContext(
   projectId: string | null,
   selectedImageId: string | null,
   clientMessages: unknown[],
+  isMainThread: boolean,
 ): Promise<LoopSetup> {
   const [project] = projectId
     ? await db.select().from(schema.projects).where(eq(schema.projects.id, projectId))
@@ -128,6 +137,17 @@ async function buildProjectContext(
 
   const attachedStyleguides = project?.id ? await loadAttachedStyleguides(project.id) : [];
 
+  // Sub-agent delegation is offered only to the project main thread (the
+  // orchestrator); an image side-chat is itself the per-frame scope. Read it
+  // before the system prompt so the prompt can teach the agent to delegate.
+  const subAgentsEnabled = projectId && isMainThread ? await getSubAgentsEnabled() : false;
+  // Surface the recurring-element bible to the orchestrator so it keeps briefs
+  // consistent with the canonical descriptions sub-agents register.
+  const recurringElements = subAgentsEnabled && projectId ? await loadElements(projectId) : [];
+
+  const [promptRow] = await db.select().from(schema.settings).where(eq(schema.settings.key, "systemPromptAppend"));
+  const customInstructions = promptRow?.value || undefined;
+
   const systemPrompt = getSystemPrompt({
     projectName: project?.name,
     aspectRatio: project?.aspectRatio,
@@ -142,6 +162,9 @@ async function buildProjectContext(
     availableWorkflows: availableWorkflows.length > 0 ? availableWorkflows : undefined,
     recentAssets,
     attachedStyleguides: attachedStyleguides.length > 0 ? attachedStyleguides : undefined,
+    subAgentsEnabled,
+    recurringElements: recurringElements.length > 0 ? recurringElements : undefined,
+    customInstructions,
   });
 
   // Whether the configured LLM can accept image content. Many OpenAI-compatible
@@ -160,7 +183,35 @@ async function buildProjectContext(
     tools = tools.filter((t) => !visionOnly.has(t.function?.name ?? ""));
   }
   const externalTools = mcpClientManager.getAllToolDefinitions();
-  const allTools = [...tools, ...externalTools];
+
+  // When delegation is enabled, the orchestrator gets delegate_image plus the
+  // shared bible tools, and a tool executor that intercepts all three (delegate
+  // runs a scoped sub-agent; the bible tools manage recurring elements directly
+  // so the orchestrator can establish/correct canon without delegating a frame).
+  const delegateTools = subAgentsEnabled
+    ? [getDelegateToolDefinition(), ...getRecurringElementToolDefinitions()]
+    : [];
+  const deps: Partial<AgentLoopDeps> | undefined = subAgentsEnabled && projectId
+    ? {
+        executeToolCall: async (name, args, pid, undoCtx) => {
+          if (name === "delegate_image") {
+            const imageId = String(args.image_id ?? "");
+            const brief = String(args.brief ?? "");
+            if (!imageId || !brief) {
+              return { success: false, result: "delegate_image requires image_id and brief." };
+            }
+            const res = await runSubAgent({ imageId, projectId, brief });
+            return { success: res.success, result: { summary: res.summary, status: res.status, image_status: res.imageStatus } };
+          }
+          if ((ELEMENT_TOOL_NAMES as readonly string[]).includes(name)) {
+            return executeElementTool(name, args, projectId);
+          }
+          return realExecuteToolCall(name, args, (pid as string) ?? projectId, undoCtx);
+        },
+      }
+    : undefined;
+
+  const allTools = [...tools, ...delegateTools, ...externalTools];
 
   const conversation: AgentLoopContext["conversation"] = [
     { role: "system", content: systemPrompt },
@@ -181,6 +232,7 @@ async function buildProjectContext(
     visionCapable,
     activePlanContext,
     projectId: projectId ?? null,
+    deps,
   };
 }
 
@@ -232,7 +284,7 @@ app.post("/chat", async (c) => {
   try {
     setup = convRef.scope === "styleguide"
       ? await buildStyleguideContext(convRef.id, clientMessages ?? [])
-      : await buildProjectContext(projectId ?? null, selectedImageId ?? null, clientMessages ?? []);
+      : await buildProjectContext(projectId ?? null, selectedImageId ?? null, clientMessages ?? [], convRef.scope === "project");
   } catch (err) {
     if (err instanceof ConversationNotFound) return c.json({ error: err.message }, 404);
     throw err;

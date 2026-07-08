@@ -1,4 +1,5 @@
 import type { AttachedStyleguideForPrompt } from "./styleguideContext";
+import type { RecurringElement } from "./recurringElements";
 
 interface ImageSummary {
   id: string;
@@ -40,6 +41,15 @@ interface SystemPromptContext {
     createdAt: string;
   }>;
   attachedStyleguides?: AttachedStyleguideForPrompt[];
+  /** When true, the orchestrator has the delegate_image tool and should prefer
+   *  handing per-frame layout work to sub-agents on multi-frame jobs. */
+  subAgentsEnabled?: boolean;
+  /** The project's recurring-element bible (only surfaced with delegation on),
+   *  so the orchestrator carries canonical descriptions into briefs. */
+  recurringElements?: RecurringElement[];
+  /** Optional user-supplied instructions appended verbatim to the end of the
+   *  generated prompt (highest-recency zone). Set in Settings; blank by default. */
+  customInstructions?: string;
 }
 
 export function getSystemPrompt(ctx: SystemPromptContext): string {
@@ -131,9 +141,32 @@ GENERATION: generate_image(image_id) renders the current layout through ComfyUI;
 WORKFLOW: design/refine the layout → review with the user → generate. To change content, edit the relevant region then regenerate.`,
   );
 
-  parts.push(
-    `BUILDING A WHOLE STORYBOARD: when the user asks you to build/plan an entire board, first propose a plan with update_plan (one step per intended frame). Then ASK the user whether you should auto-generate the images now or leave them as drafts for review — do not start generating every frame without confirmation.`,
-  );
+  if (ctx.subAgentsEnabled) {
+    parts.push(
+      `BUILDING A WHOLE STORYBOARD (delegation is ON): when the user asks you to build/plan an entire board, first propose a plan with update_plan (one step per intended frame). Then ASK whether to auto-generate now or leave drafts — don't generate every frame without confirmation.
+
+DELEGATE PER-FRAME WORK: you have delegate_image(image_id, brief). Your job as the orchestrator is to PLAN and COORDINATE, not to hand-compose every region yourself. For each frame that needs a detailed layout built (or a significant rework), call delegate_image and let a focused sub-agent do the composition, generation, and self-verification in its own context — this is how frames get full attention instead of being rushed on a large job.
+- Write a SELF-CONTAINED brief: the sub-agent sees ONLY this frame plus your brief. Include every consistency detail — recurring characters/objects and their exact appearance, the shared style and palette (hex), any required text, and continuity with neighboring frames (what came before/after).
+- create_image for the frame first (so it has an id), then delegate_image it. Do the frames one at a time; read each returned summary before moving on.
+- Review each summary. If a frame needs correction, call delegate_image on the SAME frame again with follow-up guidance — the sub-agent continues where it left off.
+- CHARACTER & ELEMENT CONSISTENCY: any character, costume, prop, or location that appears in more than one frame MUST be described the same way every time, or it will render differently between frames. When a brief involves such a recurring element, either restate its canonical appearance (age/build/face/hair, exact clothing and colors) in the brief, or — if it's already in RECURRING ELEMENTS below — tell the sub-agent to use the registered look. Sub-agents also register a canonical description the first time they build a recurring element; those are shared with every later frame automatically, so lean on them and keep briefs consistent with them.
+- You manage the bible directly too: use describe_recurring_element to establish or correct a character/costume/prop/location's canonical look up front (e.g. before any frame is built, or when the user asks for a change), and list_recurring_elements to review the current bible (it's also shown in RECURRING ELEMENTS below, but that snapshot is from the start of your turn — list_recurring_elements re-reads it after sub-agents have run).
+- Prefer delegation for building/refining individual frames; only compose layouts yourself for trivial one-off tweaks or when the user explicitly asks you to edit directly.`,
+    );
+  } else {
+    parts.push(
+      `BUILDING A WHOLE STORYBOARD: when the user asks you to build/plan an entire board, first propose a plan with update_plan (one step per intended frame). Then ASK the user whether you should auto-generate the images now or leave them as drafts for review — do not start generating every frame without confirmation.`,
+    );
+  }
+
+  if (ctx.subAgentsEnabled && ctx.recurringElements && ctx.recurringElements.length > 0) {
+    const list = ctx.recurringElements
+      .map((e) => `  - ${e.name} (${e.kind}): ${e.description}`)
+      .join("\n");
+    parts.push(
+      `RECURRING ELEMENTS (this project's canonical characters, costumes, props, and locations — keep briefs consistent with these and reuse the exact descriptions):\n${list}`,
+    );
+  }
 
   if (ctx.activePlan) {
     const steps = ctx.activePlan.steps
@@ -209,6 +242,11 @@ WORKFLOW: design/refine the layout → review with the user → generate. To cha
       block += `\nApply these rules to the process of building the storyboard.`;
       parts.push(block);
     }
+  }
+
+  const custom = ctx.customInstructions?.trim();
+  if (custom) {
+    parts.push(`ADDITIONAL INSTRUCTIONS (from user configuration — follow these, they take precedence on any conflict with the above):\n${custom}`);
   }
 
   return parts.join("\n\n");

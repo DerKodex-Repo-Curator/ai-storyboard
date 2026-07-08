@@ -5,6 +5,7 @@ import { WorkflowCheckboxDropdown } from "./comfy/WorkflowCheckboxDropdown";
 
 const TABS = [
   { id: "llm", label: "LLM" },
+  { id: "sub-agents", label: "Sub-agents" },
   { id: "embeddings", label: "Embeddings" },
   { id: "web", label: "Web" },
   { id: "comfyui", label: "ComfyUI" },
@@ -24,6 +25,12 @@ export function SettingsModal() {
   const [temperature, setTemperature] = useState(settings.temperature || "0.7");
   const [contextWindow, setContextWindow] = useState(settings.contextWindow || "128000");
   const [visionCapable, setVisionCapable] = useState(settings.visionCapable === "true");
+  const [systemPromptAppend, setSystemPromptAppend] = useState(settings.systemPromptAppend || "");
+  const [subAgentsEnabled, setSubAgentsEnabled] = useState(settings.subAgentsEnabled === "true");
+  const [subAgentApiBaseUrl, setSubAgentApiBaseUrl] = useState(settings.subAgentApiBaseUrl || "");
+  const [subAgentApiKey, setSubAgentApiKey] = useState(settings.subAgentApiKey || "");
+  const [subAgentModel, setSubAgentModel] = useState(settings.subAgentModel || "");
+  const [subAgentSystemPromptAppend, setSubAgentSystemPromptAppend] = useState(settings.subAgentSystemPromptAppend || "");
   const [embeddingApiBaseUrl, setEmbeddingApiBaseUrl] = useState(settings.embeddingApiBaseUrl || "");
   const [embeddingApiKey, setEmbeddingApiKey] = useState(settings.embeddingApiKey || "");
   const [embeddingModel, setEmbeddingModel] = useState(settings.embeddingModel || "text-embedding-3-small");
@@ -38,6 +45,12 @@ export function SettingsModal() {
     setTemperature(settings.temperature || "0.7");
     setContextWindow(settings.contextWindow || "128000");
     setVisionCapable(settings.visionCapable === "true");
+    setSystemPromptAppend(settings.systemPromptAppend || "");
+    setSubAgentsEnabled(settings.subAgentsEnabled === "true");
+    setSubAgentApiBaseUrl(settings.subAgentApiBaseUrl || "");
+    setSubAgentApiKey(settings.subAgentApiKey || "");
+    setSubAgentModel(settings.subAgentModel || "");
+    setSubAgentSystemPromptAppend(settings.subAgentSystemPromptAppend || "");
     setEmbeddingApiBaseUrl(settings.embeddingApiBaseUrl || "");
     setEmbeddingApiKey(settings.embeddingApiKey || "");
     setEmbeddingModel(settings.embeddingModel || "text-embedding-3-small");
@@ -47,7 +60,7 @@ export function SettingsModal() {
   }, [settings]);
 
   const handleSave = async () => {
-    await updateSettings({ apiBaseUrl, apiKey, model, temperature, contextWindow, visionCapable: visionCapable ? "true" : "false", embeddingApiBaseUrl, embeddingApiKey, embeddingModel, braveSearchApiKey, googleSearchApiKey, googleSearchCx });
+    await updateSettings({ apiBaseUrl, apiKey, model, temperature, contextWindow, visionCapable: visionCapable ? "true" : "false", systemPromptAppend, subAgentsEnabled: subAgentsEnabled ? "true" : "false", subAgentApiBaseUrl, subAgentApiKey, subAgentModel, subAgentSystemPromptAppend, embeddingApiBaseUrl, embeddingApiKey, embeddingModel, braveSearchApiKey, googleSearchApiKey, googleSearchCx });
     setShowSettings(false);
   };
 
@@ -99,6 +112,45 @@ export function SettingsModal() {
                   </span>
                 </span>
               </label>
+              <CollapsiblePrompt
+                label="Custom system prompt instructions"
+                value={systemPromptAppend}
+                onChange={setSystemPromptAppend}
+                hint="Optional. Appended to the end of the agent's system prompt (highest-priority zone) — use it for global style rules, tone, or constraints. Leave blank for default behavior."
+                placeholder="e.g. Always favor a muted, cinematic color palette. Never render text unless explicitly asked."
+              />
+            </div>
+          )}
+
+          {tab === "sub-agents" && (
+            <div className="space-y-3">
+              <label className="flex items-start gap-2 text-xs text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={subAgentsEnabled}
+                  onChange={(e) => setSubAgentsEnabled(e.target.checked)}
+                  className="accent-blue-500 mt-0.5"
+                />
+                <span>
+                  Enable sub-agent delegation
+                  <span className="block text-[10px] text-zinc-500">
+                    Gives the agent a <code>delegate_image</code> tool: on large jobs it hands each frame to a focused sub-agent that composes the detailed layout, renders it, and verifies it in its own context. Off by default — the agent works exactly as before.
+                  </span>
+                </span>
+              </label>
+              <div className="pt-2 border-t border-zinc-800 space-y-3">
+                <p className="text-[10px] text-zinc-500">Optional secondary model for sub-agents. Leave blank to reuse the main LLM config above — useful to point sub-agents at a cheaper/faster model for the per-frame grind.</p>
+                <Field label="Sub-agent API Base URL" value={subAgentApiBaseUrl} onChange={setSubAgentApiBaseUrl} placeholder="(same as main LLM)" />
+                <Field label="Sub-agent API Key" value={subAgentApiKey} onChange={setSubAgentApiKey} type="password" placeholder="(same as main LLM)" />
+                <Field label="Sub-agent Model" value={subAgentModel} onChange={setSubAgentModel} placeholder="(same as main LLM)" />
+                <CollapsiblePrompt
+                  label="Custom sub-agent prompt instructions"
+                  value={subAgentSystemPromptAppend}
+                  onChange={setSubAgentSystemPromptAppend}
+                  hint="Optional. Appended to each per-frame sub-agent's system prompt — use it to steer how frames are composed and verified. Leave blank for default behavior."
+                  placeholder="e.g. Keep every frame to at most 4 regions. Always verify text spelling before finishing."
+                />
+              </div>
             </div>
           )}
 
@@ -159,6 +211,46 @@ function Field({
         placeholder={placeholder}
         className="w-full bg-zinc-800 text-zinc-200 text-xs px-2 py-1.5 rounded border border-zinc-700 focus:outline-none focus:border-blue-500"
       />
+    </div>
+  );
+}
+
+function CollapsiblePrompt({
+  label, value, onChange, hint, placeholder,
+}: {
+  label: string; value: string;
+  onChange: (v: string) => void;
+  hint?: string; placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border-t border-zinc-800 pt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+      >
+        <svg
+          width="10" height="10" viewBox="0 0 24 24" fill="currentColor"
+          className={`text-zinc-500 shrink-0 transition-transform ${open ? "" : "-rotate-90"}`}
+        >
+          <path d="M7 10l5 5 5-5z" />
+        </svg>
+        <span>{label}</span>
+        {value.trim() && <span className="ml-auto text-[9px] text-blue-400">set</span>}
+      </button>
+      {open && (
+        <div className="mt-2">
+          {hint && <p className="text-[10px] text-zinc-500 mb-1.5">{hint}</p>}
+          <AutoTextarea
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            rows={4}
+            placeholder={placeholder}
+            className="w-full bg-zinc-800 text-zinc-200 text-xs px-2 py-1.5 rounded border border-zinc-700 focus:outline-none focus:border-blue-500 resize-y"
+          />
+        </div>
+      )}
     </div>
   );
 }

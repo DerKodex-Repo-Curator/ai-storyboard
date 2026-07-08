@@ -1,5 +1,6 @@
 import { db, schema } from "../../db/client";
 import { and, eq } from "drizzle-orm";
+import { webTools } from "./web";
 
 export type StyleguideToolResult = { success: boolean; result: unknown };
 
@@ -86,6 +87,10 @@ export const styleguideTools: Record<string, StyleguideToolHandler> = {
     };
   },
 
+  // Web research tools (reuse the shared implementations; neither reads the scope id).
+  web_search: (args, styleguideId) => webTools.web_search(args, styleguideId),
+  fetch_webpage: (args, styleguideId) => webTools.fetch_webpage(args, styleguideId),
+
 };
 
 export function getStyleguideToolDefinitions() {
@@ -144,6 +149,36 @@ export function getStyleguideToolDefinitions() {
         name: "list_styleguide_assets",
         description: "List all brand assets attached to this styleguide.",
         parameters: { type: "object", properties: {} },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "web_search",
+        description: "Search the web for brand references, competitor styleguides, design inspiration, or color/typography conventions. Returns result titles, URLs, and snippets. Use fetch_webpage to read a promising result in full.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "The search query." },
+            num_results: { type: "number", description: "Max results to return (default 8, max 20)." },
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "fetch_webpage",
+        description: "Fetch and extract the main readable content of a web page. Use to read a source found via web_search before incorporating its guidance into the brand doc.",
+        parameters: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "The URL to fetch." },
+            max_length: { type: "number", description: "Max characters of content to return (default 15000)." },
+          },
+          required: ["url"],
+        },
       },
     },
   ];
